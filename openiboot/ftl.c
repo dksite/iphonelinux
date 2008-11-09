@@ -3,7 +3,7 @@
 #include "nand.h"
 #include "util.h"
 
-#define FTL_ID 0x43303033
+#define FTL_ID 0x43303034
 
 static NANDData* Data;
 static UnknownNANDType* Data2;
@@ -54,17 +54,17 @@ static int hasDeviceInfoBBT() {
 	return good;
 }
 
-static uint8_t VFLData1[0x48];
-static void* pstVFLCxt = NULL;
+static VFLData1Type VFLData1;
+static VFLCxt* pstVFLCxt = NULL;
 static uint8_t* pstBBTArea = NULL;
 static void* VFLData2 = NULL;
 static void* VFLData3 = NULL;
 static int VFLData4 = 0;
 
 static int VFL_Init() {
-	memset(VFLData1, 0, 0x48);
+	memset(&VFLData1, 0, sizeof(VFLData1));
 	if(pstVFLCxt == NULL) {
-		pstVFLCxt = malloc(Data->banksTotal * 2048);
+		pstVFLCxt = malloc(Data->banksTotal * sizeof(VFLCxt));
 		if(pstVFLCxt == NULL)
 			return -1;
 	}
@@ -174,35 +174,167 @@ static int FTL_Init() {
 }
 
 // pageBuffer and spareBuffer are represented by single BUF struct within Whimory
-static int sub_18016120(int bank, int page, int option, uint8_t* pageBuffer, uint8_t* spareBuffer) {
+static int vfl_read_page(int bank, int block, int page, uint8_t* pageBuffer, uint8_t* spareBuffer) {
+	int i;
+	for(i = 0; i < 8; i++) {
+		if(nand_read(bank, (block * Data->pagesPerBlock) + page + i, pageBuffer, spareBuffer, TRUE, TRUE) == 0) {
+			SpareData* spareData = (SpareData*) spareBuffer;
+			if(spareData->field_8 == 0 && spareData->field_9 == 0x80)
+				return TRUE;
+		}
+	}
 	return FALSE;
 }
 
-static int VFLAuxFunction1(int bank) {
+static void vfl_checksum(void* data, int size, uint32_t* a, uint32_t* b) {
+	int i;
+	uint32_t* buffer = (uint32_t*) data;
+	uint32_t x = 0;
+	uint32_t y = 0;
+	for(i = 0; i < (size / 4); i++) {
+		x += buffer[i];
+		y ^= buffer[i];
+	}
+
+	*a = x + 0xAABBCCDD;
+	*b = y ^ 0xAABBCCDD;
+}
+
+static int vfl_gen_checksum(int bank) {
+	vfl_checksum(&pstVFLCxt[bank], (uint32_t)&pstVFLCxt[bank].checksum1 - (uint32_t)&pstVFLCxt[bank], &pstVFLCxt[bank].checksum1, &pstVFLCxt[bank].checksum2);
 	return FALSE;
 }
 
-static int VFLAuxFunction2(int bank) {
+static int vfl_check_checksum(int bank) {
+	static int counter = 0;
+
+	counter++;
+
+	uint32_t checksum1;
+	uint32_t checksum2;
+	vfl_checksum(&pstVFLCxt[bank], (uint32_t)&pstVFLCxt[bank].checksum1 - (uint32_t)&pstVFLCxt[bank], &checksum1, &checksum2);
+
+	// Yeah, this looks fail, but this is actually the logic they use
+	if(checksum1 == pstVFLCxt[bank].checksum1)
+		return TRUE;
+
+	if(checksum2 != pstVFLCxt[bank].checksum2)
+		return TRUE;
+
 	return FALSE;
+}
+
+static void virtual_page_number_to_virtual_address(uint32_t dwVpn, int* virtualBank, int* virtualBlock, int* virtualPage) {
+	*virtualBank = dwVpn % Data->banksTotal;
+	*virtualBlock = dwVpn / Data->pagesPerSubBlk;
+	*virtualPage = (dwVpn / Data->banksTotal) % Data->pagesPerBlock;
+}
+
+// badBlockTable is a bit array with 8 virtual blocks in one bit entry
+static int isGoodBlock(uint8_t* badBlockTable, uint32_t virtualBlock) {
+	int index = virtualBlock/8;
+	return ((badBlockTable[index / 8] >> (7 - (index % 8))) & 0x1) == 0x1;
+}
+
+static int virtual_block_to_physical_block(int virtualBank, int virtualBlock) {
+	if(isGoodBlock(pstVFLCxt[virtualBank].badBlockTable, virtualBlock))
+		return virtualBlock;
+
+	int pwDesPbn;
+	for(pwDesPbn = 0; pwDesPbn < pstVFLCxt[virtualBank].numReservedBlocks; pwDesPbn++) {
+		if(pstVFLCxt[virtualBank].reservedBlockPoolMap[pwDesPbn] == virtualBlock) {
+			if(pwDesPbn >= Data->blocksPerBank) {
+				bufferPrintf("ftl: Destination physical block for remapping is greater than number of blocks per bank!");
+			}
+			return pstVFLCxt[virtualBank].reservedBlockPoolStart + pwDesPbn;
+		}
+	}
+
+	return virtualBlock;
+}
+
+int VFL_Read(uint32_t virtualPageNumber, uint8_t* buffer, uint8_t* spare, int empty_ok, int* did_error) {
+	if(did_error) {
+		*did_error = FALSE;
+	}
+
+	VFLData1.field_8++;
+	VFLData1.field_20++;
+
+	uint32_t dwVpn = virtualPageNumber + (Data->pagesPerSubBlk * Data2->field_4);
+	if(dwVpn >= Data->pagesTotal) {
+		bufferPrintf("ftl: dwVpn overflow: %d\r\n", dwVpn);
+		return ERROR_ARG;
+	}
+
+	if(dwVpn < Data->pagesPerSubBlk) {
+		bufferPrintf("ftl: dwVpn underflow: %d\r\n", dwVpn);
+	}
+
+	int virtualBank;
+	int virtualBlock;
+	int virtualPage;
+	int physicalBlock;
+
+	virtual_page_number_to_virtual_address(dwVpn, &virtualBank, &virtualBlock, &virtualPage);
+	physicalBlock = virtual_block_to_physical_block(virtualBank, virtualBlock);
+
+	int page = physicalBlock * Data->pagesPerBlock + virtualPage;
+
+	bufferPrintf("ftl: mapping %d to %d, %d (%d), %d - %d\r\n", dwVpn, virtualBank, physicalBlock, virtualBlock, virtualPage, page);
+
+	int ret = nand_read(virtualBank, page, buffer, spare, TRUE, TRUE);
+
+	if(!empty_ok && ret == ERROR_EMPTYBLOCK) {
+		ret = ERROR_NAND;
+	}
+
+	if(did_error) {
+		if((Data->field_2F > 0 && ret == 0) || ret == ERROR_NAND) {
+			*did_error = TRUE;
+		}
+	}
+
+	if(ret == ERROR_ARG || ret == ERROR_NAND) {
+		nand_bank_reset(virtualBank, 100);
+		ret = nand_read(virtualBank, page, buffer, spare, TRUE, TRUE);
+		if(!empty_ok && ret == ERROR_EMPTYBLOCK) {
+			return ERROR_NAND;
+		}
+
+		if(ret == ERROR_ARG || ret == ERROR_NAND)
+			return ret;
+	}
+
+	if(ret == ERROR_EMPTYBLOCK) {
+		if(spare) {
+			memset(spare, 0xFF, sizeof(SpareData));
+		}
+	}
+
+	return 0;
 }
 
 static int VFL_Open() {
 	int bank = 0;
 	for(bank = 0; bank < Data->banksTotal; bank++) {
-		if(findDeviceInfoBBT(bank, pstBBTArea) != 0) {
+		if(!findDeviceInfoBBT(bank, pstBBTArea)) {
 			bufferPrintf("ftl: findDeviceInfoBBT failed\r\n");
 			return -1;
 		}
+
 		if(bank >= Data->banksTotal) {
 			return -1;
 		}
 
 
-		uint8_t* r10 = ((uint8_t*)pstVFLCxt) + bank * 2048;
+		VFLCxt* curVFLCxt = &pstVFLCxt[bank];
 		uint8_t* pageBuffer = malloc(Data->bytesPerPage);
 		uint8_t* spareBuffer = malloc(Data->bytesPerSpare);
-		if(pageBuffer == NULL)
+		if(pageBuffer == NULL || spareBuffer == NULL) {
+			bufferPrintf("ftl: cannot allocate page and spare buffer\r\n");
 			return -1;
+		}
 
 		int i = 1;
 		for(i = 1; i < Data2->field_0; i++) {
@@ -210,13 +342,14 @@ static int VFL_Open() {
 			if(!(pstBBTArea[i / 8] & (1 << (i  & 0x7))))
 				continue;
 
-			if(sub_18016120(bank, i, 0, pageBuffer, spareBuffer) == TRUE) {
-				memcpy(r10 + 0x7A2, pageBuffer + 0x7A2, 8);
+			if(vfl_read_page(bank, i, 0, pageBuffer, spareBuffer) == TRUE) {
+				memcpy(curVFLCxt->VFLCxtBlock, ((VFLCxt*)pageBuffer)->VFLCxtBlock, sizeof(curVFLCxt->VFLCxtBlock));
 				break;
 			}
 		}
 
-		if(i == Data->field_0) {
+		if(i == Data2->field_0) {
+			bufferPrintf("ftl: cannot find readable VFLCxtBlock\r\n");
 			free(pageBuffer);
 			free(spareBuffer);
 			return -1;
@@ -225,11 +358,11 @@ static int VFL_Open() {
 		int maxSpareData = 0xFFFFFFFF;
 		int maxSpareDataIdx = 4;
 		for(i = 0; i < 4; i++) {
-			uint16_t r1 = *((uint16_t*)(r10 + 0x7A2 + 2 * i));
-			if(r1 == 0xFFFF)
+			uint16_t block = curVFLCxt->VFLCxtBlock[i];
+			if(block == 0xFFFF)
 				continue;
 
-			if(sub_18016120(bank, r1, 0, pageBuffer, spareBuffer) != TRUE)
+			if(vfl_read_page(bank, block, 0, pageBuffer, spareBuffer) != TRUE)
 				continue;
 
 			if(*((uint32_t*)spareBuffer) > 0 && *((uint32_t*)spareBuffer) <= maxSpareData) {
@@ -239,6 +372,7 @@ static int VFL_Open() {
 		}
 
 		if(maxSpareDataIdx == 4) {
+			bufferPrintf("ftl: cannot find readable VFLCxtBlock index in spares\r\n");
 			free(pageBuffer);
 			free(spareBuffer);
 			return -1;
@@ -247,48 +381,51 @@ static int VFL_Open() {
 		int page = 8;
 		int last = 0;
 		for(page = 8; page < Data->pagesPerBlock; page += 8) {
-			if(sub_18016120(bank, *((uint16_t*)((r10 + (maxSpareDataIdx * 2) + 1952) + 2)), page, pageBuffer, spareBuffer) == FALSE) {
+			if(vfl_read_page(bank, curVFLCxt->VFLCxtBlock[maxSpareDataIdx], page, pageBuffer, spareBuffer) == FALSE) {
 				break;
 			}
 			
 			last = page;
 		}
 
-		if(sub_18016120(bank, *((uint16_t*)((r10 + (maxSpareDataIdx * 2) + 1952) + 2)), last, pageBuffer, spareBuffer) == FALSE) {
+		if(vfl_read_page(bank, curVFLCxt->VFLCxtBlock[maxSpareDataIdx], last, pageBuffer, spareBuffer) == FALSE) {
+			bufferPrintf("ftl: cannot find readable VFLCxt\n");
 			free(pageBuffer);
 			free(spareBuffer);
 			return -1;
 		}
 
 		// Aha, so the upshot is that this finds the VFLCxt and copies it into pstVFLCxt
-		memcpy((void**)(((uint8_t*)pstVFLCxt) + bank * 2048), pageBuffer, 2048);
-		if(*((uint32_t*)r10) >= VFLData4) {
-			VFLData4 = *((uint32_t*)r10);
+		memcpy(&pstVFLCxt[bank], pageBuffer, sizeof(VFLCxt));
+		if(curVFLCxt->field_0 >= VFLData4) {
+			VFLData4 = curVFLCxt->field_0;
 		}
 
 		free(pageBuffer);
 		free(spareBuffer);
 
-		if(VFLAuxFunction2(bank) == FALSE)
+		if(vfl_check_checksum(bank) == FALSE) {
+			bufferPrintf("ftl: VFLCxt has bad checksum\n");
 			return -1;
+		}
 	} 
 
 	int max = 0;
 	void* maxThing = NULL;
 	uint8_t buffer[6];
 	for(bank = 0; bank < Data->banksTotal; bank++) {
-		int cur = *((int*)(((uint8_t*)pstVFLCxt) + bank * 2048));
+		int cur = pstVFLCxt[bank].field_0;
 		if(max <= cur) {
 			max = cur;
-			maxThing = (void*)((((uint8_t*)pstVFLCxt) + bank * 2048) + 4);
+			maxThing = pstVFLCxt[bank].field_4;
 		}
 	}
 
 	memcpy(buffer, maxThing, 6);
 
 	for(bank = 0; bank < Data->banksTotal; bank++) {
-		memcpy((void**)(((uint8_t*)pstVFLCxt) + bank * 2048), buffer, 6);
-		VFLAuxFunction1(bank);
+		memcpy(pstVFLCxt[bank].field_4, buffer, 6);
+		vfl_gen_checksum(bank);
 	}
 
 	return 0;
@@ -319,6 +456,7 @@ int ftl_setup() {
 	for(i = 0; i < Data->pagesPerBlock; i++) {
 		if(nand_read_alternate_ecc(0, i, buffer) == 0 && *((uint32_t*) buffer) == FTL_ID) {
 			foundSignature = TRUE;
+			break;
 		}
 	}
 	free(buffer);

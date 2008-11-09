@@ -96,7 +96,7 @@ static int wait_for_status_bit_3(int timeout) {
 	return 0;
 }
 
-static int bank_reset_helper(int bank, int timeout) {
+static int nand_bank_reset_helper(int bank, int timeout) {
 	uint64_t startTime = timer_get_system_microtime();
 	if(NANDBankResetSetting)
 		bank = 0;
@@ -116,7 +116,7 @@ static int bank_reset_helper(int bank, int timeout) {
 	return 0;
 }
 
-static int bank_reset(int bank, int timeout) {
+int nand_bank_reset(int bank, int timeout) {
 	SET_REG(NAND + NAND_CONFIG,
 			((NANDSetting1 & NAND_CONFIG_SETTING1MASK) << NAND_CONFIG_SETTING1SHIFT) | ((NANDSetting2 & NAND_CONFIG_SETTING2MASK) << NAND_CONFIG_SETTING2SHIFT)
 			| (1 << (banksTable[bank] + 1)) | NAND_CONFIG_DEFAULTS);
@@ -125,7 +125,7 @@ static int bank_reset(int bank, int timeout) {
 
 	int ret = wait_for_ready(timeout);
 	if(ret == 0) {
-		ret = bank_reset_helper(bank, timeout);
+		ret = nand_bank_reset_helper(bank, timeout);
 		udelay(1000);
 		return ret;
 	} else {
@@ -199,7 +199,7 @@ int nand_setup() {
 	SET_REG(NAND + NAND_SETUP, GET_REG(NAND + NAND_SETUP) | (ECCType << 4));
 
 	for(bank = 0; bank < NAND_NUM_BANKS; bank++) {
-		bank_reset(bank, 100);
+		nand_bank_reset(bank, 100);
 
 		SET_REG(NAND + NAND_CON, NAND_CON_SETTING1);
 		SET_REG(NAND + NAND_CONFIG,
@@ -215,7 +215,7 @@ int nand_setup() {
 		SET_REG(NAND + NAND_CON, NAND_CON_SETUPTRANSFER);
 
 		wait_for_status_bit_2(500);
-		bank_reset_helper(bank, 100);
+		nand_bank_reset_helper(bank, 100);
 
 		SET_REG(NAND + NAND_TRANSFERSIZE, 8);
 		SET_REG(NAND + NAND_CON, NAND_CON_BEGINTRANSFER);
@@ -306,7 +306,8 @@ int nand_setup() {
 	Data.subBlksTotal = (Data.banksTotal * Data.blocksPerBank) / Data.banksTotal;
 
 	Data2.field_2 = Data.subBlksTotal - Data.userSubBlksTotal - 28;
-	Data2.field_4 = 4 + Data2.field_2;
+	Data2.field_0 = Data2.field_2 + 4;
+	Data2.field_4 = Data2.field_0 + 5;
 	Data2.field_6 = 3;
 	Data2.field_8 = 23;
 	if(Data2.field_8 == 0)
@@ -405,13 +406,11 @@ static int wait_for_ecc_interrupt(int timeout) {
 
 static int ecc_finish() {
 	int ret;
-	if((ret = wait_for_ecc_interrupt(500)) != 0) {
+	if((ret = wait_for_ecc_interrupt(500)) != 0)
 		return ret;
-	}
 
-	if((GET_REG(NANDECC + NANDECC_STATUS) & 0x1) != 0) {
+	if((GET_REG(NANDECC + NANDECC_STATUS) & 0x1) != 0)
 		return ERROR_ECC;
-	}
 
 	return 0;
 }
@@ -470,7 +469,7 @@ static int checkECC(int setting, uint8_t* data, uint8_t* ecc) {
 	return 0;
 }
 
-static int isBadBlock(uint8_t* buffer, int size) {
+static int isEmptyBlock(uint8_t* buffer, int size) {
 	int i;
 	int found = 0;
 	for(i = 0; i < size; i++) {
@@ -548,11 +547,11 @@ int nand_read(int bank, int page, uint8_t* buffer, uint8_t* spare, int doECC, in
 	int eccFailed = 0;
 	if(doECC) {
 		if(buffer) {
-			eccFailed = (checkECC(ECCType, buffer, aTemporarySBuf + 0xC) != 0);
+			eccFailed = (checkECC(ECCType, buffer, aTemporarySBuf + sizeof(SpareData)) != 0);
 		}
 
-		memcpy(aTemporaryReadEccBuf, aTemporarySBuf, 0xC);
-		ecc_perform(ECCType, 1, aTemporaryReadEccBuf, aTemporarySBuf + 0xC + TotalECCDataSize);
+		memcpy(aTemporaryReadEccBuf, aTemporarySBuf, sizeof(SpareData));
+		ecc_perform(ECCType, 1, aTemporaryReadEccBuf, aTemporarySBuf + sizeof(SpareData) + TotalECCDataSize);
 		if(ecc_finish() != 0) {
 			memset(aTemporaryReadEccBuf, 0xFF, SECTOR_SIZE);
 			eccFailed |= 1;
@@ -562,15 +561,15 @@ int nand_read(int bank, int page, uint8_t* buffer, uint8_t* spare, int doECC, in
 	if(spare) {
 		if(doECC) {
 			// We can only copy the first 12 bytes because the rest is probably changed by the ECC check routine
-			memcpy(spare, aTemporaryReadEccBuf, 0xC);
+			memcpy(spare, aTemporaryReadEccBuf, sizeof(SpareData));
 		} else {
 			memcpy(spare, aTemporarySBuf, Data.bytesPerSpare);
 		}
 	}
 
 	if(eccFailed || checkBadBlocks) {
-		if(isBadBlock(aTemporarySBuf, Data.bytesPerSpare) != 0) {
-			return ERROR_BADBLOCK;
+		if(isEmptyBlock(aTemporarySBuf, Data.bytesPerSpare) != 0) {
+			return ERROR_EMPTYBLOCK;
 		} else if(eccFailed) {
 			return ERROR_NAND;
 		}
@@ -579,7 +578,7 @@ int nand_read(int bank, int page, uint8_t* buffer, uint8_t* spare, int doECC, in
 	return 0;
 
 FIL_read_error:
-	bank_reset(bank, 100);
+	nand_bank_reset(bank, 100);
 	return ERROR_NAND;
 }
 
