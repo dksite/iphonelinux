@@ -202,7 +202,7 @@ int usb_start(USBEnumerateHandler hEnumerate, USBStartHandler hStart) {
 
 	SET_REG(USB + GAHBCFG, GAHBCFG_DMAEN | GAHBCFG_BSTLEN_INCR8 | GAHBCFG_MASKINT);
 	SET_REG(USB + GUSBCFG, GUSBCFG_PHYIF16BIT | GUSBCFG_SRPENABLE | GUSBCFG_HNPENABLE | ((5 & GUSBCFG_TURNAROUND_MASK) << GUSBCFG_TURNAROUND_SHIFT));
-	SET_REG(USB + DCFG, DCFG_NZSTSOUTHSHK); // some random setting. See specs
+	SET_REG(USB + DCFG, DCFG_HISPEED); // some random setting. See specs
 	SET_REG(USB + DCFG, GET_REG(USB + DCFG) & ~(DCFG_DEVICEADDRMSK));
 	InEPRegs[0].control = USB_EPCON_ACTIVE;
 	OutEPRegs[0].control = USB_EPCON_ACTIVE;
@@ -571,6 +571,7 @@ static void usbIRQHandler(uint32_t token) {
 
 		if((status & GINTMSK_RESET) == GINTMSK_RESET) {
 			if(usb_state < USBError) {
+				bufferPrintf("usb: reset detected\r\n");
 				change_state(USBPowered);
 			}
 
@@ -579,6 +580,7 @@ static void usbIRQHandler(uint32_t token) {
 			SET_REG(USB + GINTSTS, GINTMSK_RESET);
 
 			if(retval) {
+				bufferPrintf("usb: listening for further usb events\r\n");
 				return;	
 			}
 
@@ -629,7 +631,7 @@ static void usbIRQHandler(uint32_t token) {
 									memcpy(controlSendBuffer, usb_get_device_qualifier_descriptor(), length);
 									break;
 								default:
-									uartPrintf("Unknown descriptor request: %d\r\n", setupPacket->wValue >> 8);
+									bufferPrintf("Unknown descriptor request: %d\r\n", setupPacket->wValue >> 8);
 									if(usb_state < USBError) {
 										change_state(USBUnknownDescriptorRequest);
 									}
@@ -807,8 +809,11 @@ USBConfigurationDescriptor* usb_get_configuration_descriptor(int index, uint8_t 
 }
 
 void usb_add_endpoint(USBInterface* interface, int endpoint, USBDirection direction, USBTransferType transferType) {
-	if(transferType == USBInterrupt) { 
-		addEndpointDescriptor(interface, endpoint, direction, transferType, USBNoSynchronization, USBDataEndpoint, packetsizeFromSpeed(usb_speed), 32);
+	if(transferType == USBInterrupt) {
+		if(usb_speed == USB_HIGHSPEED)
+			addEndpointDescriptor(interface, endpoint, direction, transferType, USBNoSynchronization, USBDataEndpoint, packetsizeFromSpeed(usb_speed), 9);
+		else
+			addEndpointDescriptor(interface, endpoint, direction, transferType, USBNoSynchronization, USBDataEndpoint, packetsizeFromSpeed(usb_speed), 32);
 	} else {
 		addEndpointDescriptor(interface, endpoint, direction, transferType, USBNoSynchronization, USBDataEndpoint, packetsizeFromSpeed(usb_speed), 0);
 	}
@@ -819,6 +824,10 @@ static void initializeDescriptors() {
 	stringDescriptors = NULL;
 	configurations = NULL;
 	firstStringDescriptor = NULL;
+	firstStringDescriptor = (USBFirstStringDescriptor*) malloc(sizeof(USBFirstStringDescriptor) + (sizeof(uint16_t) * 1));
+	firstStringDescriptor->bLength = sizeof(USBFirstStringDescriptor) + (sizeof(uint16_t) * 1);
+	firstStringDescriptor->bDescriptorType = USBStringDescriptorType;
+	firstStringDescriptor->wLANGID[0] = USB_LANGID_ENGLISH_US;
 }
 
 static void releaseConfigurations() {
@@ -913,14 +922,13 @@ static uint8_t addStringDescriptor(const char* descriptorString) {
 
 	int sLen = strlen(descriptorString);
 	stringDescriptors[newIndex] = (USBStringDescriptor*) malloc(sizeof(USBStringDescriptor) + sLen);
-	stringDescriptors[newIndex]->bLength = sizeof(USBStringDescriptor) + sLen;
+	stringDescriptors[newIndex]->bLength = sizeof(USBStringDescriptor) + sLen * 2;
 	stringDescriptors[newIndex]->bDescriptorType = USBStringDescriptorType;
-	memcpy(stringDescriptors[newIndex]->bString, descriptorString, sLen);
-
-	firstStringDescriptor = (USBFirstStringDescriptor*) realloc(firstStringDescriptor, sizeof(USBFirstStringDescriptor) + (sizeof(uint16_t) * numStringDescriptors));
-	firstStringDescriptor->bLength = sizeof(USBFirstStringDescriptor) + (sizeof(uint16_t) * numStringDescriptors);
-	firstStringDescriptor->bDescriptorType = USBStringDescriptorType;
-	firstStringDescriptor->wLANGID[newIndex] = USB_LANGID_ENGLISH_US;
+	uint16_t* string = (uint16_t*) stringDescriptors[newIndex]->bString;
+	int i;
+	for(i = 0; i < sLen; i++) {
+		string[i] = descriptorString[i];
+	}
 
 	return (newIndex + 1);
 }
@@ -1072,3 +1080,16 @@ static int8_t ringBufferEnqueue(RingBuffer* buffer, uint8_t value) {
 	return value;
 }
 
+USBSpeed usb_get_speed() {
+	switch(usb_speed) {
+		case USB_HIGHSPEED:
+			return USBHighSpeed;
+		case USB_FULLSPEED:
+		case USB_FULLSPEED_48_MHZ:
+			return USBFullSpeed;
+		case USB_LOWSPEED:
+			return USBLowSpeed;
+	}
+
+	return USBLowSpeed;
+}

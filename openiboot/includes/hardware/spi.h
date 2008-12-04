@@ -36,6 +36,22 @@
 #define SPI1_IRQ 0xA
 #define SPI2_IRQ 0xB
 
+#define GPIO_SPI0_CS0_IPHONE 0x400
+#define GPIO_SPI0_CS0_IPOD 0x700
+
+#ifdef CONFIG_IPOD
+#define GPIO_SPI0_CS0 GPIO_SPI0_CS0_IPOD
+#else
+#define GPIO_SPI0_CS0 GPIO_SPI0_CS0_IPHONE
+#endif
+
+#define GPIO_SPI1_CS0 0x1800
+
+#ifdef CONFIG_3G
+#define GPIO_SPI0_CS1 0x705
+#define GPIO_SPI0_CS2 0x706
+#endif
+
 #define NUM_SPIPORTS 3
 
 #endif

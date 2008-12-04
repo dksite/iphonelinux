@@ -33,17 +33,14 @@ typedef struct UnknownNANDType {
 } UnknownNANDType;
 
 typedef struct SpareData {
-	uint8_t field_0;
-	uint8_t field_1;
-	uint8_t field_2;
-	uint8_t field_3;
+	uint32_t logicalPageNumber;
 	uint8_t field_4;
 	uint8_t field_5;
 	uint8_t field_6;
 	uint8_t field_7;
 	uint8_t field_8;
 	uint8_t field_9;
-	uint8_t field_A;
+	uint8_t eccMark;
 	uint8_t field_B;
 } __attribute__ ((packed)) SpareData;
 
@@ -69,9 +66,12 @@ typedef struct NANDData {
 	uint8_t field_2F;
 } NANDData;
 
+extern int HasNANDInit;
+
 int nand_setup();
 int nand_bank_reset(int bank, int timeout);
 int nand_read(int bank, int page, uint8_t* buffer, uint8_t* spare, int doECC, int checkBadBlocks);
+int nand_read_multiple(uint16_t* bank, uint32_t* pages, uint8_t* main, SpareData* spare, int pagesCount);
 int nand_read_alternate_ecc(int bank, int page, uint8_t* buffer);
 NANDData* nand_get_geometry();
 UnknownNANDType* nand_get_data();

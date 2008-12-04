@@ -1,3 +1,4 @@
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <usb.h>
@@ -19,6 +20,8 @@ usb_dev_handle* device;
 pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 FILE* outputFile = NULL;
 volatile size_t readIntoOutput = 0;
+
+#define USB_BYTES_AT_A_TIME 512
 
 void* doOutput(void* threadid) {
 	OpenIBootCmd cmd;
@@ -47,7 +50,7 @@ void* doOutput(void* threadid) {
 			int read = 0;
 			while(read < totalLen) {
 				int left = (totalLen - read);
-				size_t toRead = (left > 0x80) ? 0x80 : left;
+				size_t toRead = (left > USB_BYTES_AT_A_TIME) ? USB_BYTES_AT_A_TIME : left;
 				int hasRead;
 				hasRead = usb_bulk_read(device, 1, buffer + read, toRead, 1000);
 				read += hasRead;
@@ -81,12 +84,12 @@ void* doOutput(void* threadid) {
 
 		pthread_mutex_unlock(&lock);
 
-		pthread_yield();
+		sched_yield();
 	}
 	pthread_exit(NULL);
 }
 
-#define MAX_TO_SEND 16384
+#define MAX_TO_SEND 512
 
 void sendBuffer(char* buffer, size_t size) {
 	OpenIBootCmd cmd;
@@ -117,7 +120,7 @@ void sendBuffer(char* buffer, size_t size) {
 
 void* doInput(void* threadid) {
 	char* commandBuffer = NULL;
-	char toSendBuffer[0x80];
+	char toSendBuffer[USB_BYTES_AT_A_TIME];
 
 	rl_basic_word_break_characters = " \t\n\"\\'`@$><=;|&{(~!:";
 	rl_completion_append_character = '\0';
@@ -201,12 +204,13 @@ void* doInput(void* threadid) {
 			readIntoOutput = toRead;
 			pthread_mutex_unlock(&lock);
 		} else {
+			commandBuffer[len] = '\n';
 			pthread_mutex_lock(&lock);
-			sendBuffer(commandBuffer, len);
+			sendBuffer(commandBuffer, len + 1);
 			pthread_mutex_unlock(&lock);
 		}
 
-		pthread_yield();
+		sched_yield();
 	}
 	pthread_exit(NULL);
 }

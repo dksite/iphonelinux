@@ -8,6 +8,8 @@
 #include "dma.h"
 #include "hardware/interrupt.h"
 
+int HasNANDInit = FALSE;
+
 static int banksTable[NAND_NUM_BANKS];
 
 static int ECCType = 0;
@@ -177,6 +179,9 @@ static int bank_setup(int bank) {
 }
 
 int nand_setup() {
+	if(HasNANDInit)
+		return 0;
+
 	NANDSetting1 = 7;
 	NANDSetting2 = 7;
 	NANDSetting3 = 7;
@@ -272,7 +277,7 @@ int nand_setup() {
 	Data.field_2F = 3;
 	Data.pagesPerBlock = nandType->pagesPerBlock;
 
-	if(Data.sectorsPerPage >= 4) {
+	if(Data.sectorsPerPage > 4) {
 		LargePages = TRUE;
 	} else {
 		LargePages = FALSE;
@@ -307,7 +312,7 @@ int nand_setup() {
 
 	Data2.field_2 = Data.subBlksTotal - Data.userSubBlksTotal - 28;
 	Data2.field_0 = Data2.field_2 + 4;
-	Data2.field_4 = Data2.field_0 + 5;
+	Data2.field_4 = Data2.field_2 + 5;
 	Data2.field_6 = 3;
 	Data2.field_8 = 23;
 	if(Data2.field_8 == 0)
@@ -336,6 +341,8 @@ int nand_setup() {
 	memset(aTemporaryReadEccBuf, 0xFF, SECTOR_SIZE);
 
 	aTemporarySBuf = (uint8_t*) malloc(Data.bytesPerSpare);
+
+	HasNANDInit = TRUE;
 
 	return 0;
 }
@@ -590,13 +597,31 @@ UnknownNANDType* nand_get_data() {
 	return &Data2;
 }
 
+int nand_read_multiple(uint16_t* bank, uint32_t* pages, uint8_t* main, SpareData* spare, int pagesCount) {
+	int i;
+	unsigned int ret;
+	for(i = 0; i < pagesCount; i++) {
+		ret = nand_read(bank[i], pages[i], main, (uint8_t*) &spare[i], TRUE, TRUE);
+		if(ret > 1)
+			return ret;
+
+		main += Data.bytesPerPage;
+	}
+
+	return 0;
+}
+
 int nand_read_alternate_ecc(int bank, int page, uint8_t* buffer) {
 	int ret;
-	if((ret = nand_read(bank, page, buffer, aTemporarySBuf, FALSE, TRUE)) != 0)
+	if((ret = nand_read(bank, page, buffer, aTemporarySBuf, FALSE, TRUE)) != 0) {
+		DebugPrintf("nand: Raw read failed.\r\n");
 		return ret;
+	}
 
-	if(checkECC(ECCType2, buffer, aTemporarySBuf) != 0)
+	if(checkECC(ECCType2, buffer, aTemporarySBuf) != 0) {
+		DebugPrintf("nand: Alternate ECC check failed, but raw read succeeded.\r\n");
 		return ERROR_NAND;
+	}
 
 	return 0;
 }

@@ -16,9 +16,14 @@
 #include "dma.h"
 #include "nand.h"
 #include "ftl.h"
+#include "hfs/fs.h"
 
 void cmd_reboot(int argc, char** argv) {
 	Reboot();
+}
+
+void cmd_poweroff(int argc, char** argv) {
+	pmu_poweroff();
 }
 
 void cmd_md(int argc, char** argv) {
@@ -122,14 +127,70 @@ void cmd_images_read(int argc, char** argv) {
 	bufferPrintf("Read %d of %s to 0x%x - 0x%x\r\n", length, argv[1], address, address + length);
 }
 
-void cmd_go(int argc, char** argv) {
-	if(argc < 2) {
-		bufferPrintf("Usage: %s <address>\r\n", argv[0]);
-		return;
+void cmd_kernel(int argc, char** argv) {
+	uint32_t address;
+	uint32_t size;
+
+	if(argc < 3) {
+		address = 0x09000000;
+		size = received_file_size;
+	} else {
+		address = parseNumber(argv[1]);
+		size = parseNumber(argv[2]);
 	}
 
-	uint32_t address = parseNumber(argv[1]);
+	set_kernel((void*) address, size);
+	bufferPrintf("Loaded kernel at %08x - %08x\r\n", address, address + size);
+}
+
+void cmd_ramdisk(int argc, char** argv) {
+	uint32_t address;
+	uint32_t size;
+	uint32_t realSize;
+
+	if(argc < 4) {
+		if(argc < 2) {
+			bufferPrintf("Usage: %s [address] [size] <uncompressed size in KB>\r\n", argv[0]);
+			return;
+		}
+		address = 0x09000000;
+		size = received_file_size;
+		realSize = parseNumber(argv[1]);
+	} else {
+		address = parseNumber(argv[1]);
+		size = parseNumber(argv[2]);
+		realSize = parseNumber(argv[3]);
+	}
+
+	set_ramdisk((void*) address, size, realSize);
+	bufferPrintf("Loaded ramdisk at %08x - %08x\r\n", address, address + size);
+}
+
+void cmd_boot(int argc, char** argv) {
+	char* arguments = "";
+
+	if(argc >= 2) {
+		arguments = argv[1];
+	}
+
+	bufferPrintf("Booting kernel with arguments (%s)...\r\n", arguments);
+
+	boot_linux(arguments);
+}
+
+void cmd_go(int argc, char** argv) {
+	uint32_t address;
+
+	if(argc < 2) {
+		address = 0x09000000;
+	} else {
+		address = parseNumber(argv[1]);
+	}
+
 	bufferPrintf("Jumping to 0x%x (interrupts disabled)\r\n", address);
+
+	// make as if iBoot was called from ROM
+	pmu_set_iboot_stage(0x1F);
 
 	udelay(100000);
 
@@ -190,8 +251,8 @@ void cmd_bgcolor(int argc, char** argv) {
 	}
 
 	uint8_t red = parseNumber(argv[1]);
-	uint8_t blue = parseNumber(argv[2]);
-	uint8_t green = parseNumber(argv[3]);
+	uint8_t green = parseNumber(argv[2]);
+	uint8_t blue = parseNumber(argv[3]);
 
 	lcd_fill((red << 16) | (green << 8) | blue);
 }
@@ -234,12 +295,17 @@ void cmd_setenv(int argc, char** argv) {
 }
 
 void cmd_saveenv(int argc, char** argv) {
+	bufferPrintf("Saving environment, this may take awhile...\r\n");
 	nvram_save();
 	bufferPrintf("Environment saved\r\n");
 }
 
 void cmd_install(int argc, char** argv) {
 	images_install(&_start, (uint32_t)&OpenIBootEnd - (uint32_t)&_start);
+}
+
+void cmd_uninstall(int argc, char** argv) {
+	images_uninstall();
 }
 
 void cmd_pmu_voltage(int argc, char** argv) {
@@ -295,6 +361,21 @@ void cmd_pmu_charge(int argc, char** argv) {
 	}
 }
 
+void cmd_pmu_nvram(int argc, char** argv) {
+	uint8_t reg;
+
+	pmu_get_gpmem_reg(PMU_IBOOTSTATE, &reg);
+	bufferPrintf("0: [iBootState] %02x\r\n", reg);
+	pmu_get_gpmem_reg(PMU_IBOOTDEBUG, &reg);
+	bufferPrintf("1: [iBootDebug] %02x\r\n", reg);
+	pmu_get_gpmem_reg(PMU_IBOOTSTAGE, &reg);
+	bufferPrintf("2: [iBootStage] %02x\r\n", reg);
+	pmu_get_gpmem_reg(PMU_IBOOTERRORCOUNT, &reg);
+	bufferPrintf("3: [iBootErrorCount] %02x\r\n", reg);
+	pmu_get_gpmem_reg(PMU_IBOOTERRORSTAGE, &reg);
+	bufferPrintf("4: [iBootErrorStage] %02x\r\n", reg);
+}
+
 void cmd_dma(int argc, char** argv) {
 	if(argc < 4) {
 		bufferPrintf("Usage: %s <source> <dest> <size>\r\n", argv[0]);
@@ -336,7 +417,7 @@ void cmd_nand_read(int argc, char** argv) {
 
 		pages--;
 		page++;
-		address += Data->bytesPerSpare;
+		address += Data->bytesPerPage;
 	}
 
 	bufferPrintf("done!\r\n");
@@ -385,6 +466,34 @@ void cmd_vfl_read(int argc, char** argv) {
 	bufferPrintf("VFL_read: %x\r\n", VFL_Read(page, (uint8_t*) address, NULL, TRUE, NULL));
 }
 
+void cmd_ftl_read(int argc, char** argv) {
+	if(argc < 4) {
+		bufferPrintf("Usage: %s <address> <lpn> <pages>\r\n", argv[0]);
+		return;
+	}
+
+	uint32_t address = parseNumber(argv[1]);
+	uint32_t page = parseNumber(argv[2]);
+	uint32_t pages = parseNumber(argv[3]);
+
+	bufferPrintf("Reading %d pages, starting at %d into 0x%x\r\n", pages, page, address);
+	bufferPrintf("FTL_read: %x\r\n", FTL_Read(page, pages, (uint8_t*) address));
+}
+
+void cmd_bdev_read(int argc, char** argv) {
+	if(argc < 4) {
+		bufferPrintf("Usage: %s <address> <offset> <bytes>\r\n", argv[0]);
+		return;
+	}
+
+	uint32_t address = parseNumber(argv[1]);
+	uint32_t offset = parseNumber(argv[2]);
+	uint32_t bytes = parseNumber(argv[3]);
+
+	bufferPrintf("Reading %d bytes, starting at %d into 0x%x\r\n", bytes, offset, address);
+	bufferPrintf("ftl_read: %x\r\n", ftl_read((uint8_t*) address, offset, bytes));
+}
+
 void cmd_text(int argc, char** argv) {
 	if(argc < 2) {
 		bufferPrintf("Usage: %s <on|off>\r\n", argv[0]);
@@ -402,6 +511,24 @@ void cmd_text(int argc, char** argv) {
 	}
 }
 
+void cmd_malloc_stats(int argc, char** argv) {
+	malloc_stats();
+}
+
+void cmd_frequency(int argc, char** argv) {
+	bufferPrintf("Clock frequency: %d Hz\r\n", clock_get_frequency(FrequencyBaseClock));
+	bufferPrintf("Memory frequency: %d Hz\r\n", clock_get_frequency(FrequencyBaseMemory));
+	bufferPrintf("Bus frequency: %d Hz\r\n", clock_get_frequency(FrequencyBaseBus));
+	bufferPrintf("Peripheral frequency: %d Hz\r\n", clock_get_frequency(FrequencyBasePeripheral));
+	bufferPrintf("Display frequency: %d Hz\r\n", clock_get_frequency(FrequencyBaseDisplay));
+	bufferPrintf("Fixed frequency: %d Hz\r\n", clock_get_frequency(FrequencyBaseFixed));
+	bufferPrintf("Timebase frequency: %d Hz\r\n", clock_get_frequency(FrequencyBaseTimebase));
+}
+
+void cmd_version(int argc, char** argv) {
+	bufferPrintf("%s\r\n", OPENIBOOT_VERSION_STR);
+}
+
 void cmd_help(int argc, char** argv) {
 	OPIBCommand* curCommand = CommandList;
 	while(curCommand->name != NULL) {
@@ -413,7 +540,9 @@ void cmd_help(int argc, char** argv) {
 OPIBCommand CommandList[] = 
 	{
 		{"install", "install openiboot onto the device", cmd_install},
+		{"uninstall", "uninstall openiboot from the device", cmd_uninstall},
 		{"reboot", "reboot the device", cmd_reboot},
+		{"poweroff", "power off the device", cmd_poweroff},
 		{"echo", "echo back a line", cmd_echo},
 		{"clear", "clears the screen", cmd_clear},
 		{"text", "turns text display on or off", cmd_text},
@@ -427,6 +556,11 @@ OPIBCommand CommandList[] =
 		{"nand_read", "read a page of NAND into RAM", cmd_nand_read},
 		{"nand_read_spare", "read a page of NAND's spare into RAM", cmd_nand_read_spare},
 		{"vfl_read", "read a page of VFL into RAM", cmd_vfl_read},
+		{"ftl_read", "read a page of FTL into RAM", cmd_ftl_read},
+		{"bdev_read", "read bytes from a NAND block device", cmd_bdev_read},
+		{"fs_ls", "list files and folders", fs_cmd_ls},
+		{"fs_cat", "display a file", fs_cmd_cat},
+		{"fs_extract", "extract a file into memory", fs_cmd_extract},
 		{"nor_read", "read a block of NOR into RAM", cmd_nor_read},
 		{"nor_write", "write RAM into NOR", cmd_nor_write},
 		{"nor_erase", "erase a block of NOR", cmd_nor_erase},
@@ -435,13 +569,20 @@ OPIBCommand CommandList[] =
 		{"pmu_voltage", "get the battery voltage", cmd_pmu_voltage},
 		{"pmu_powersupply", "get the power supply type", cmd_pmu_powersupply},
 		{"pmu_charge", "turn on and off the power charger", cmd_pmu_charge},
+		{"pmu_nvram", "list powernvram registers", cmd_pmu_nvram},
+		{"malloc_stats", "display malloc stats", cmd_malloc_stats},
+		{"frequency", "display clock frequencies", cmd_frequency},
 		{"printenv", "list the environment variables in nvram", cmd_printenv},
 		{"setenv", "sets an environment variable", cmd_setenv},
 		{"saveenv", "saves the environment variables in nvram", cmd_saveenv},
 		{"bgcolor", "fill the framebuffer with a color", cmd_bgcolor},
 		{"backlight", "set the backlight level", cmd_backlight},
+		{"kernel", "load a Linux kernel", cmd_kernel},
+		{"ramdisk", "load a Linux ramdisk", cmd_ramdisk},
+		{"boot", "boot a Linux kernel", cmd_boot},
 		{"go", "jump to a specified address (interrupts disabled)", cmd_go},
 		{"jump", "jump to a specified address (interrupts enabled)", cmd_jump},
+		{"version", "display the version string", cmd_version},
 		{"help", "list the available commands", cmd_help},
 		{NULL, NULL}
 	};

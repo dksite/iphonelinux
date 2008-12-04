@@ -7,9 +7,11 @@
 #include "hardware/power.h"
 #include "util.h"
 #include "spi.h"
+#include "hardware/spi.h"
 #include "i2c.h"
 #include "timer.h"
 #include "pmu.h"
+#include "nvram.h"
 
 static int lcd_has_init = FALSE;
 static int lcd_init_attempted = FALSE;
@@ -77,26 +79,67 @@ static const uint16_t AUOInitRegisters[] = {0xB90A, 0x55};
 static const int AUOInitRegisterCount = 2;
 
 static const GammaTableDescriptor gammaTables[] =
-	{{0xD100, 0xFF70,
-		{{0x34328EB6, 0x34003400, 0x34003400, 0xD000D00, 0x3400D00, 0x71DC771D, 0x340D37, 0xD0, 0x1C007000, 0x1C1C070, 0xC771C707, 0xDDC7771D, 0xDC7771DD, 0xDDDDDDDD, 0x7477774, 0x70001C00, 0xE9C, 0}},
-		{{0x343400F6, 0x434D0D0D, 0xD0D0D343, 0x34343434, 0x434D0D0D, 0x34000D03, 0x7000, 0x1C070070, 0xC0700700, 0x71C1C1C1, 0xC7071C1C, 0xDC771C71, 0xC71DC71D, 0xDDDC771D, 0x71D71D, 0xF701C01C, 0, 0}},
-		{{0x74DDD0F6, 0xDD377777, 0x7774DDDD, 0xDDDDDD37, 0x77777774, 0x4034DDD3, 0xD00003, 0x70070000, 0x1C070700, 0x7771C707, 0xDDDC7777, 0xDD377774, 0x434D3434, 0x3434343, 0x1D010D, 0xF701C01C, 0, 0}}
-	},
-	{0xC200, 0xFF70,
-		{{0xDDD37F2, 0x1DDDD34D, 0x4D341C, 0x40D1C4D0, 0x3400D3, 0x1C000000, 0xDDDDDC1C, 0xD34374, 0x3400D, 0, 0x70000000, 0, 0, 0, 0, 0x1C034, 0, 0}},
-		{{0x774DCA98, 0x1C1C, 0x1C1DD34, 0x77774340, 0x70701C1C, 0xDDDC71C0, 0x3434DDD, 0xD, 0x1C000, 0xC07001C0, 0x701C01, 0x1C007, 0xD00035C, 0x40D0D034, 0xD37434D3, 0xD34DD374, 0xD, 0}},
-		{{0x37774A98, 0x74DD374D, 0x34D374D3, 0x34D3434D, 0x74D34D34, 0xDD374DD3, 0xC771DDDD, 0x7071C1D, 0xD374D347, 0x34D34374, 0xD343434, 0x34D3434D, 0xDDDD374D, 0x71C771D, 0x7007, 0x340D00D0, 0, 0}}
-	}};
+	{
+		{0xB300, 0xFF70,
+			{{0x34328EB6, 0x34003400, 0x34003400, 0xD000D00, 0x3400D00, 0x71DC771D, 0x340D37, 0xD0, 0x1C007000, 0x1C1C070, 0xC771C707, 0xDDC7771D, 0xDC7771DD, 0xDDDDDDDD, 0x7477774, 0x70001C00, 0xE9C, 0}},
+			{{0x343400F6, 0x434D0D0D, 0xD0D0D343, 0x34343434, 0x434D0D0D, 0x34000D03, 0x7000, 0x1C070070, 0xC0700700, 0x71C1C1C1, 0xC7071C1C, 0xDC771C71, 0xC71DC71D, 0xDDDC771D, 0x71D71D, 0xF701C01C, 0, 0}},
+			{{0x74DDD0F6, 0xDD377777, 0x7774DDDD, 0xDDDDDD37, 0x77777774, 0x4034DDD3, 0xD00003, 0x70070000, 0x1C070700, 0x7771C707, 0xDDDC7777, 0xDD377774, 0x434D3434, 0x3434343, 0x1D010D, 0xF701C01C, 0, 0}}
+		},
+		{0xD100, 0xFF70,
+			{{0x34328EB6, 0x34003400, 0x34003400, 0xD000D00, 0x3400D00, 0x71DC771D, 0x340D37, 0xD0, 0x1C007000, 0x1C1C070, 0xC771C707, 0xDDC7771D, 0xDC7771DD, 0xDDDDDDDD, 0x7477774, 0x70001C00, 0xE9C, 0}},
+			{{0x343400F6, 0x434D0D0D, 0xD0D0D343, 0x34343434, 0x434D0D0D, 0x34000D03, 0x7000, 0x1C070070, 0xC0700700, 0x71C1C1C1, 0xC7071C1C, 0xDC771C71, 0xC71DC71D, 0xDDDC771D, 0x71D71D, 0xF701C01C, 0, 0}},
+			{{0x74DDD0F6, 0xDD377777, 0x7774DDDD, 0xDDDDDD37, 0x77777774, 0x4034DDD3, 0xD00003, 0x70070000, 0x1C070700, 0x7771C707, 0xDDDC7777, 0xDD377774, 0x434D3434, 0x3434343, 0x1D010D, 0xF701C01C, 0, 0}}
+		},
+		{0xC200, 0xFF70,
+			{{0xDDD37F2, 0x1DDDD34D, 0x4D341C, 0x40D1C4D0, 0x3400D3, 0x1C000000, 0xDDDDDC1C, 0xD34374, 0x3400D, 0, 0x70000000, 0, 0, 0, 0, 0x1C034, 0, 0}},
+			{{0x774DCA98, 0x1C1C, 0x1C1DD34, 0x77774340, 0x70701C1C, 0xDDDC71C0, 0x3434DDD, 0xD, 0x1C000, 0xC07001C0, 0x701C01, 0x1C007, 0xD00035C, 0x40D0D034, 0xD37434D3, 0xD34DD374, 0xD, 0}},
+			{{0x37774A98, 0x74DD374D, 0x34D374D3, 0x34D3434D, 0x74D34D34, 0xDD374DD3, 0xC771DDDD, 0x7071C1D, 0xD374D347, 0x34D34374, 0xD343434, 0x34D3434D, 0xDDDD374D, 0x71C771D, 0x7007, 0x340D00D0, 0, 0}}
+		},
+		{0xE510, 0xFF70,
+			{{0xDDDDD0F2, 0xDDDDDDDD, 0xDDDDDDDD, 0x774DDDDD, 0x70777777, 0x701C00, 0x74007000, 0xDDC71C70, 0x71DDD374, 0x340DD377, 0xD0D340D0, 0x34D0DD0, 0xC771DD0D, 0x34DDDC71, 0x71DC770C, 0x72945DC7, 0, 0}},
+			{{0x771C74F2, 0xC771DC77, 0x71DC771D, 0xC771DC77, 0x1C7771D, 0x1C0, 0x340000, 0x34000, 0x743401C0, 0x3434D3, 0x774D0000, 0x74DDDDD3, 0x71D37, 0x3000D000, 0x1C0037, 0x770D0440, 3, 0}},
+			{{0xDDDC74F2, 0xDDC7771D, 0x1DDC7771, 0x1DDC7777, 0x1DC777, 0, 0x77400000, 0xDD374C77, 0x71C774D0, 0x34DDC, 0xDDDD340D, 0xD34D34DD, 0x707071DD, 0xCDDC770, 0x34D34D37, 0x45474D, 0, 0}}
+		},
+		{0xD110, 0xFF70,
+			{{0xDDDDD0F2, 0x77777774, 0xDDDDDDD3, 0xD3777774, 0x1DDDDD, 0x1E903434, 0x7771DDC, 0x377774, 0x74D34DD3, 0xD3407007, 0x34374D, 0x34D34D0D, 0x1DC70D0D, 0xDD34D0D, 0x77000000, 0x42B41D07, 4, 0}},
+			{{0xD374D0F2, 0x74DD374D, 0xD374DDD3, 0x74DD374D, 0x40774DD3, 0x1F434DD3, 0x4071C71C, 0xDC0DDDC7, 0x1DD374DD, 0x77740000, 0x4D034377, 0xD34DD37, 0xD01DC00D, 0x1C034D34, 0x44501C1C, 0x37770FDC, 0, 0}},
+			{{0x4DC774F2, 0x7771DDDC, 0x1DDDDC77, 0xDDC77777, 0xCAC771DD, 0x700D34D0, 0xD007771C, 0x7DC000CA, 0x5C1C7070, 0x74D0D03, 0xD34DDDC, 0x3434D, 0xC7700000, 0x3707001, 0x2B400D00, 0xE8E8D528, 0xD300DC, 0}}
+		},
+		{0xC210, 0xFF70,
+			{{0xC1C771F2, 0x71C7071, 0x7071C1C7, 0x71C7071C, 0x75C1C70, 0xD0D0000, 0xDC, 0, 0x400D0000, 0xC0000003, 0x77777701, 0x777771C7, 0x3400077, 0x4D31C1E9, 0x4D447777, 0x7404C3C3, 0x30, 0}},
+			{{0x1C01F2, 0x70007, 0xC001C007, 0x1C007001, 0x1D001C00, 0x701C001C, 0x1C01C003, 0xC1C0701C, 0x70001, 0x1C001C00, 0x1DDDDDDC, 0xDDDDDC77, 0x4D340771, 0x71C07003, 0x71D44070, 0x30F, 3, 0}},
+			{{0x1DC1C4F2, 0xC71C71C7, 0x71C71C71, 0x1C71C71C, 0x4D7071C7, 0x374DDDC7, 0xD3774DDD, 0x43434D34, 0x4DD374D3, 0xD34D34D3, 0x70070000, 0x7071C1C0, 0x74DDD000, 0x70000003, 0xC1C1C70C, 0x14284071, 0x37, 0}}
+		},
+		{0xC223, 0xFF77,
+			{{0x1DC702A6, 0xC771DC77, 0xDD7471DD, 0x1C01CD, 0x77777774, 0x377000D0, 7, 0, 0, 0xC7007000, 0x1C1C7071, 0xC0707070, 0x1C707001, 0x1DD34D00, 0x401DC707, 0x1374D3, 0x30, 0}},
+			{{0x34D3A4A6, 0x434D0D0D, 0x1C74D0D3, 0x1C71C7, 0x1DD3774, 0xDC000D, 0x434000D0, 0xD0343403, 0x340D0, 0, 0x700000, 0x7001C, 0x34340000, 0x4D0D00D0, 0x700D0343, 0x37774000, 0x300, 0}},
+				{{0x340C3A6, 0x400D0034, 0x35DD003, 0x1D000000, 0xDD0001C7, 0xD000DF4D, 0x34034000, 0xD0340D00, 0x1C000000, 0x1C1C0700, 0xC71DC71C, 0x1DC71C71, 0x707777, 0xC0070000, 0x70701C01, 0x15CAC070, 0x31D, 0}}
+		},
+		{0xC220, 0xFF77,
+			{{0x340D1CF6, 0xD00D0340, 0x40D00D00, 0x3403403, 0x7740D00D, 0xDDDDDC, 0x1C0701C0, 0x71C71C7, 0x1C07001C, 0x4DD37777, 0xC1C771D3, 0xDDDDDC71, 0x7007774, 0x1C01C000, 0x34010070, 0x700, 3, 0}},
+			{{0x3774D0F6, 0x4DD3774D, 0x374DD377, 0xDD3774DD, 0xD71D3774, 0x37340, 0xC0007000, 0x1C01, 0x71C070D0, 0x7071DC7, 0xC70701C0, 0x1DC71D, 0, 0xC7070070, 0x1D37771D, 0x34371C7, 0, 0}},
+			{{0x137134F6, 0x77777777, 0x77777777, 0xDDDDDDDC, 0xD01DDDDD, 0x70003034, 0x1C1C0700, 0x7071C, 0x377701C0, 0x77774DDD, 0xDDDDDDC7, 0xD34D374D, 0x70701C1, 0x701C0707, 0x1C034C, 0x444D0, 0, 0}}
+		},
+		{0xD123, 0xFF77,
+			{{0x1C71C4F2, 0x71C71C77, 0xDC71C71C, 0x71C71C71, 0x1C71DC, 0x340740D0, 0x1C707000, 0x40D03777, 0x4DDD3743, 0x71C1C073, 0xC1C701C0, 0xDDDDDD01, 0xDDDDDDC0, 0x701C034, 0x4D01C707, 0xA0AD34D3, 0x38A48, 0}},
+			{{0x771C74F2, 0x1DC771DC, 0xDC771C77, 0x771DC771, 0xC1C771DC, 0x1D1C1C1, 0x77770700, 0xD00D3777, 0xDDDDD340, 0xC701C034, 0x1C000701, 0xC7777400, 0xC771C00D, 0xD34DDDDD, 0x74D0, 0x728101C, 0x30, 0}},
+			{{0x1C71C4F2, 0xC71C71C7, 0x71C71C71, 0x1C71C71C, 0x71C71C7, 0x740070, 0xDDC7070D, 0xD0D0DDD, 0xD3434D0, 0xC7771C00, 0x700701DD, 0x74DD0000, 0xDDDDC003, 0xD0DDD, 0x1D000000, 0x8A5071C7, 0x10E2, 0}}
+		},
+		{0xE522, 0xFF77,
+			{{0x328EB6, 0xD00000, 0xD000000, 0x40000000, 3, 0x771C7000, 0xC77401DC, 0x34D37771, 0x77771D34, 0x340037, 0x4D34D340, 0x40000003, 0xC0701C13, 0xC00340D, 0x34DD34D3, 0x135D774D, 0xD0, 0}},
+			{{0x1C071F2, 0x1C07007, 0xC0701C07, 0x701C0701, 0x701C0, 0x70, 0x1C707000, 0xC771DC77, 0x1C1DC71, 0x1C1C0707, 0x7071DC7, 0xD1C000D0, 0xC4000000, 0x7001C1C1, 0x340DC00, 0x73DD1100, 3, 0}},
+			{{0xC07071F2, 0x70701C1, 0xC070701C, 0x70701C1, 0x701C1C, 0xC707001C, 0x1C71, 0x1C000000, 0xD00D7000, 0x1C000000, 0xD007070, 0x7000D00, 0x7135C070, 0x7771C71C, 0xC037, 0xA4A11C00, 0x10, 0}}
+		}
+	};
 
-
-static const PMURegisterData backlightOffData = {0x0, 0x29, 0x0};
+static const PMURegisterData backlightOffData = {0x29, 0x0};
 
 static const PMURegisterData backlightData[] = {
-	{0x0, 0x17, 0x1},
-	{0x0, 0x2A, 0x0},
-	{0x0, 0x28, 0x22},
-	{0x0, 0x29, 0x1},
-	{0x0, 0x2A, 0x6}
+	{0x17, 0x1},
+	{0x2A, 0x0},
+	{0x28, 0x22},
+	{0x29, 0x1},
+	{0x2A, 0x6}
 };
 
 static int initDisplay();
@@ -132,6 +175,8 @@ static void displayPanelInfo(uint8_t* panelID);
 static void installGammaTables(uint32_t panelID);
 static void installGammaTable(int tableNo, uint8_t* table);
 
+static void syrah_quiesce();
+
 int lcd_setup() {
 	int backlightLevel = 0;
 
@@ -141,7 +186,13 @@ int lcd_setup() {
 	if(!lcd_has_init) {
 		if(!lcd_init_attempted) {
 			if(initDisplay() == 0) {
-				backlightLevel = 20;
+				const char* envBL = nvram_getvar("backlight-level");
+				if(envBL) {
+					backlightLevel = parseNumber(envBL);
+				}
+
+				if(backlightLevel == 0)
+					backlightLevel = 20;
 			} else {
 				backlightLevel = 0;
 			}
@@ -159,6 +210,15 @@ int lcd_setup() {
 	CurFramebuffer = currentWindow->framebuffer.buffer;
 
 	return 0;
+}
+
+void lcd_shutdown() {
+	lcd_fill(0x000000);
+	udelay(40000);
+	lcd_set_backlight_level(0);
+	lcd_fill(0xFFFFFF);
+	udelay(40000);
+	syrah_quiesce();
 }
 
 void lcd_fill(uint32_t color) {
@@ -204,9 +264,10 @@ static int initDisplay() {
 static void installGammaTables(uint32_t panelID) {
 	const GammaTableDescriptor* curTable = gammaTables;
 
-	while(curTable < (gammaTables + sizeof(gammaTables))) {
+	int i;
+	for(i = 0; i < (sizeof(gammaTables)/sizeof(GammaTableDescriptor)); i++) {
 		if((curTable->panelIDMask & panelID) == curTable->panelIDMatch) {
-			bufferPrintf("Installing gamma table 0x%08lx / 0x%08lx\r\n", curTable->panelIDMatch, curTable->panelIDMask);
+			bufferPrintf("Installing gamma table 0x%08x / 0x%08x\r\n", curTable->panelIDMatch, curTable->panelIDMask);
 			installGammaTable(0, (uint8_t*) curTable->table0.data);
 			installGammaTable(1, (uint8_t*) curTable->table1.data);
 			installGammaTable(2, (uint8_t*) curTable->table2.data);
@@ -214,7 +275,7 @@ static void installGammaTables(uint32_t panelID) {
 		}
 		curTable++;
 	}
-	bufferPrintf("No matching gamma table found\r\n");
+	bufferPrintf("No matching gamma table found in %d tables\r\n", (sizeof(gammaTables)/sizeof(GammaTableDescriptor)));
 
 }
 
@@ -664,6 +725,10 @@ static int syrah_init() {
 
 	setCommandMode(ON);
 
+#ifdef CONFIG_3G
+	gpio_pin_output(LCD_GPIO_3G_ENABLE, 0);
+#endif
+
 	gpio_pin_output(LCD_GPIO_MPL_RX_ENABLE, 0);
 	gpio_pin_output(LCD_GPIO_POWER_ENABLE, 0);
 	resetLCD();
@@ -671,7 +736,19 @@ static int syrah_init() {
 	gpio_pin_output(LCD_GPIO_POWER_ENABLE, 1);
 	udelay(10000);
 
+#ifdef CONFIG_IPOD
+	togglePixelClock(ON);
+	transmitCommandOnSPI1(0x6D, 0x0);
+	transmitCommandOnSPI1(0x36, 0x8);
+	udelay(15000);
+#endif
+#ifdef CONFIG_3G
+	togglePixelClock(ON);
+	transmitCommandOnSPI1(0x6D, 0x0);
+#endif
+#ifdef CONFIG_IPHONE
 	transmitCommandOnSPI1(0x6D, 0x40);
+#endif
 
 	enterRegisterMode();
 	udelay(1000);
@@ -704,8 +781,10 @@ static int syrah_init() {
 	transmitCommandOnSPI0(0x7, 0x0);
 	transmitCommandOnSPI0(0x0, 0x16);
 
+#ifndef CONFIG_IPOD
 	togglePixelClock(ON);
 	udelay(40000);
+#endif
 
 	setPanelRegister(0x6D, 0x0);
 	transmitCommandOnSPI1(0x36, 0x8);
@@ -717,22 +796,22 @@ static int syrah_init() {
 	memset(panelID, 0, 3);
 
 	lcdCommand[0] = 0xDA;
-	gpio_pin_output(GPIO_SPI1_CS0, 0);
-	spi_tx(1, lcdCommand, 1, TRUE, 0);
-	spi_rx(1, &panelID[0], 1, TRUE, 0);
-	gpio_pin_output(GPIO_SPI1_CS0, 1);
+	gpio_pin_output(LCD_PANEL_CS, 0);
+	spi_tx(LCD_PANEL_SPI, lcdCommand, 1, TRUE, 0);
+	spi_rx(LCD_PANEL_SPI, &panelID[0], 1, TRUE, 0);
+	gpio_pin_output(LCD_PANEL_CS, 1);
 
 	lcdCommand[0] = 0xDB;
-	gpio_pin_output(GPIO_SPI1_CS0, 0);
-	spi_tx(1, lcdCommand, 1, TRUE, 0);
-	spi_rx(1, &panelID[1], 1, TRUE, 0);
-	gpio_pin_output(GPIO_SPI1_CS0, 1);
+	gpio_pin_output(LCD_PANEL_CS, 0);
+	spi_tx(LCD_PANEL_SPI, lcdCommand, 1, TRUE, 0);
+	spi_rx(LCD_PANEL_SPI, &panelID[1], 1, TRUE, 0);
+	gpio_pin_output(LCD_PANEL_CS, 1);
 
 	lcdCommand[0] = 0xDC;
-	gpio_pin_output(GPIO_SPI1_CS0, 0);
-	spi_tx(1, lcdCommand, 1, TRUE, 0);
-	spi_rx(1, &panelID[2], 1, TRUE, 0);
-	gpio_pin_output(GPIO_SPI1_CS0, 1);
+	gpio_pin_output(LCD_PANEL_CS, 0);
+	spi_tx(LCD_PANEL_SPI, lcdCommand, 1, TRUE, 0);
+	spi_rx(LCD_PANEL_SPI, &panelID[2], 1, TRUE, 0);
+	gpio_pin_output(LCD_PANEL_CS, 1);
 
 	if((panelID[2] & 0x7) == 1 || (panelID[2] & 0x7) == 3) {
 		panelID[2] |= 0x8;
@@ -792,6 +871,8 @@ static int syrah_init() {
 				break;
 		}
 	} else {
+		bufferPrintf("Autoboot display...\r\n");
+
 		if((panelID[2] & 0x7) == 1) {
 			enterRegisterMode();
 			setPanelRegister(0x7E, 0x0);
@@ -804,16 +885,20 @@ static int syrah_init() {
 		if(panelID[1] == 0xD1 && (panelID[2] & 0x7) == 2 && panelID[0] == 0xA1) {
 			LCDInitRegisterCount = AUOInitRegisterCount;
 			LCDInitRegisters = AUOInitRegisters;
+		} else {
+			LCDInitRegisterCount = 0;
 		}
 	}
 
 	LCDPanelID = (panelID[0] << 16) | (panelID[1] << 8) | panelID[2];
 
-	bufferPrintf("Writing LCD init registers...\r\n");
-	int i;
-	for(i = 0; i < LCDInitRegisterCount; i++) {
-		uint8_t* regInfo = (uint8_t*) &LCDInitRegisters[i];
-		setPanelRegister(regInfo[0], regInfo[1]);
+	if(LCDInitRegisterCount > 0) {
+		bufferPrintf("Writing LCD init registers...\r\n");
+		int i;
+		for(i = 0; i < LCDInitRegisterCount; i++) {
+			uint8_t* regInfo = (uint8_t*) &LCDInitRegisters[i];
+			setPanelRegister(regInfo[0], regInfo[1]);
+		}
 	}
 
 	switch(panelID[2] & 0x7) {
@@ -822,12 +907,12 @@ static int syrah_init() {
 			setPanelRegister(0x2E, getPanelRegister(0x2E) & 0x7F);
 			break;
 		case 2:
-			bufferPrintf("turning on parity error flag");
+			bufferPrintf("turning on parity error flag\r\n");
 			setPanelRegister(0x53, 0x5);
 			setPanelRegister(0xB, 0x10);
 			break;
 		case 3:
-			bufferPrintf("changing to continuous calibration mode");
+			bufferPrintf("changing to continuous calibration mode 3\r\n");
 			setPanelRegister(0x50, 0x3);
 			// drop down to init for Novatek-5.x
 		case 1:
@@ -891,6 +976,8 @@ static void displayPanelInfo(uint8_t* panelID) {
 		bufferPrintf("M68/");
 	} else if((panelID[2] & 0x70) == 0x10) {
 		bufferPrintf("N45/");
+	} else if((panelID[2] & 0x70) == 0x20) {
+		bufferPrintf("N82/");
 	} else {
 		bufferPrintf("UNKNOWN/");
 	}
@@ -911,6 +998,10 @@ static void displayPanelInfo(uint8_t* panelID) {
 		default:
 			bufferPrintf("UNKNOWN ");
 	}
+
+	if((panelID[2] & (1 << 3)) != 0)
+		bufferPrintf("AutoBoot Enabled ");
+
 	bufferPrintf("\r\n");
 }
 
@@ -927,16 +1018,33 @@ static void togglePixelClock(OnOff swt) {
 }
 
 static void resetLCD() {
-	gpio_pin_output(LCD_GPIO_RESET, 1);
-	udelay(10000);
-	gpio_pin_output(LCD_GPIO_RESET, 0);
+	int altResetDirection = FALSE;
+
+#ifdef CONFIG_3G
+	if(gpio_detect_configuration() < 3)
+		altResetDirection = TRUE;
+#endif
+
+#ifdef CONFIG_IPOD
+	altResetDirection = TRUE;
+#endif
+
+	if(altResetDirection) {
+		gpio_pin_output(LCD_GPIO_RESET, 0);
+		udelay(10000);
+		gpio_pin_output(LCD_GPIO_RESET, 1);
+	} else {
+		gpio_pin_output(LCD_GPIO_RESET, 1);
+		udelay(10000);
+		gpio_pin_output(LCD_GPIO_RESET, 0);
+	}
 }
 
 static void setCommandMode(OnOff swt) {
 	if(swt) {
-		pmu_write_reg(LCD_I2C_BUS, LCD_I2C_COMMAND, LCD_I2C_COMMANDMODE_ON, 0);
+		pmu_write_reg(LCD_I2C_COMMAND, LCD_I2C_COMMANDMODE_ON, 0);
 	} else {
-		pmu_write_reg(LCD_I2C_BUS, LCD_I2C_COMMAND, LCD_I2C_COMMANDMODE_OFF, 0);
+		pmu_write_reg(LCD_I2C_COMMAND, LCD_I2C_COMMANDMODE_OFF, 0);
 	}
 }
 
@@ -962,9 +1070,9 @@ static void transmitCommandOnSPI0(int command, int subcommand) {
 	lcdCommand[1] = subcommand;
 
 	gpio_custom_io(LCD_GPIO_CONTROL_ENABLE, 0x2 | 1);
-	gpio_pin_output(GPIO_SPI0_CS0, 0);
-	spi_tx(0, lcdCommand, 2, TRUE, 0);
-	gpio_pin_output(GPIO_SPI0_CS0, 1);
+	gpio_pin_output(LCD_CS, 0);
+	spi_tx(LCD_SPI, lcdCommand, 2, TRUE, 0);
+	gpio_pin_output(LCD_CS, 1);
 	gpio_custom_io(LCD_GPIO_CONTROL_ENABLE, 0x2 | 0);
 
 }
@@ -974,9 +1082,9 @@ static void transmitCommandOnSPI1(int command, int subcommand) {
 	lcdCommand[0] = command;
 	lcdCommand[1] = subcommand;
 
-	gpio_pin_output(GPIO_SPI1_CS0, 0);
-	spi_tx(1, lcdCommand, 2, TRUE, 0);
-	gpio_pin_output(GPIO_SPI1_CS0, 1);
+	gpio_pin_output(LCD_PANEL_CS, 0);
+	spi_tx(LCD_PANEL_SPI, lcdCommand, 2, TRUE, 0);
+	gpio_pin_output(LCD_PANEL_CS, 1);
 }
 
 static void setPanelRegister(int reg, int value) {
@@ -984,9 +1092,9 @@ static void setPanelRegister(int reg, int value) {
 	lcdCommand[0] = reg & 0x7F;
 	lcdCommand[1] = value;
 
-	gpio_pin_output(GPIO_SPI1_CS0, 0);
-	spi_tx(1, lcdCommand, 2, TRUE, 0);
-	gpio_pin_output(GPIO_SPI1_CS0, 1);
+	gpio_pin_output(LCD_PANEL_CS, 0);
+	spi_tx(LCD_PANEL_SPI, lcdCommand, 2, TRUE, 0);
+	gpio_pin_output(LCD_PANEL_CS, 1);
 }
 
 
@@ -994,9 +1102,9 @@ static void transmitShortCommandOnSPI1(int command) {
 	uint8_t lcdCommand[1];
 	lcdCommand[0] = command;
 
-	gpio_pin_output(GPIO_SPI1_CS0, 0);
-	spi_tx(1, lcdCommand, 1, TRUE, 0);
-	gpio_pin_output(GPIO_SPI1_CS0, 1);
+	gpio_pin_output(LCD_PANEL_CS, 0);
+	spi_tx(LCD_PANEL_SPI, lcdCommand, 1, TRUE, 0);
+	gpio_pin_output(LCD_PANEL_CS, 1);
 }
 
 static int getPanelRegister(int reg) {
@@ -1004,15 +1112,15 @@ static int getPanelRegister(int reg) {
 	uint8_t buffer[1];
 	lcdCommand[0] = 0x80 | reg;
 
-	gpio_pin_output(GPIO_SPI1_CS0, 0);
-	spi_tx(1, lcdCommand, 1, TRUE, 0);
-	spi_rx(1, buffer, 1, TRUE, 0);
-	gpio_pin_output(GPIO_SPI1_CS0, 1);
+	gpio_pin_output(LCD_PANEL_CS, 0);
+	spi_tx(LCD_PANEL_SPI, lcdCommand, 1, TRUE, 0);
+	spi_rx(LCD_PANEL_SPI, buffer, 1, TRUE, 0);
+	gpio_pin_output(LCD_PANEL_CS, 1);
 
 	return buffer[0];
 }
 
-void syrah_quiesce() {
+static void syrah_quiesce() {
 	bufferPrintf("syrah_quiesce()\r\n");
 	spi_set_baud(1, 1000000, SPIOption13Setting0, 1, 1, 1);
 	spi_set_baud(0, 500000, SPIOption13Setting0, 1, 0, 0);
