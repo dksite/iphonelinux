@@ -146,24 +146,33 @@ void cmd_kernel(int argc, char** argv) {
 void cmd_ramdisk(int argc, char** argv) {
 	uint32_t address;
 	uint32_t size;
-	uint32_t realSize;
 
-	if(argc < 4) {
-		if(argc < 2) {
-			bufferPrintf("Usage: %s [address] [size] <uncompressed size in KB>\r\n", argv[0]);
-			return;
-		}
+	if(argc < 3) {
 		address = 0x09000000;
 		size = received_file_size;
-		realSize = parseNumber(argv[1]);
 	} else {
 		address = parseNumber(argv[1]);
 		size = parseNumber(argv[2]);
-		realSize = parseNumber(argv[3]);
 	}
 
-	set_ramdisk((void*) address, size, realSize);
+	set_ramdisk((void*) address, size);
 	bufferPrintf("Loaded ramdisk at %08x - %08x\r\n", address, address + size);
+}
+
+void cmd_rootfs(int argc, char** argv) {
+	int partition;
+	const char* fileName;
+
+	if(argc < 3) {
+		bufferPrintf("usage: %s <partition> <path>\r\n", argv[0]);
+		return;
+	} else {
+		partition = parseNumber(argv[1]);
+		fileName = argv[2];
+	}
+
+	set_rootfs(partition, fileName);
+	bufferPrintf("set rootfs to %s on partition %d\r\n", fileName, partition);
 }
 
 void cmd_boot(int argc, char** argv) {
@@ -423,6 +432,33 @@ void cmd_nand_read(int argc, char** argv) {
 	bufferPrintf("done!\r\n");
 }
 
+void cmd_nand_ecc(int argc, char** argv) {
+	if(argc < 3) {
+		bufferPrintf("Usage: %s <data> <ecc>\r\n", argv[0]);
+		return;
+	}
+
+	uint32_t address = parseNumber(argv[1]);
+	uint32_t ecc = parseNumber(argv[2]);
+
+	bufferPrintf("nand_calculate_ecc(%x, %x) = %d\r\n", address, ecc, nand_calculate_ecc((uint8_t*) address, (uint8_t*) ecc));
+}
+
+void cmd_nand_write(int argc, char** argv) {
+	if(argc < 6) {
+		bufferPrintf("Usage: %s <data> <spare> <bank> <page> <ecc>\r\n", argv[0]);
+		return;
+	}
+
+	uint32_t address = parseNumber(argv[1]);
+	uint32_t spare = parseNumber(argv[2]);
+	uint32_t bank = parseNumber(argv[3]);
+	uint32_t page = parseNumber(argv[4]);
+	uint32_t ecc = parseNumber(argv[5]);
+
+	bufferPrintf("nand_write(%d, %d, %x, %x, %d) = %d\r\n", bank, page, address, spare, ecc, nand_write(bank, page, (uint8_t*) address, (uint8_t*) spare, ecc));
+}
+
 void cmd_nand_read_spare(int argc, char** argv) {
 	if(argc < 4) {
 		bufferPrintf("Usage: %s <address> <bank> <page> [pages]\r\n", argv[0]);
@@ -464,6 +500,28 @@ void cmd_vfl_read(int argc, char** argv) {
 
 	bufferPrintf("Reading virtual page %d into 0x%x\r\n", page, address);
 	bufferPrintf("VFL_read: %x\r\n", VFL_Read(page, (uint8_t*) address, NULL, TRUE, NULL));
+}
+
+void cmd_vfl_erase(int argc, char** argv) {
+	int count;
+
+	if(argc < 2) {
+		bufferPrintf("Usage: %s <block> [count]\r\n", argv[0]);
+		return;
+	}
+
+	if(argc < 3) {
+		count = 1;
+	} else {
+		count = parseNumber(argv[2]);
+	}
+
+	uint32_t block = parseNumber(argv[1]);
+	uint32_t firstBlock = block;
+
+	for(; block < (firstBlock + count); block++) {
+		bufferPrintf("VFL_Erase(%d): %x\r\n", block, VFL_Erase(block));
+	}
 }
 
 void cmd_ftl_read(int argc, char** argv) {
@@ -525,8 +583,20 @@ void cmd_frequency(int argc, char** argv) {
 	bufferPrintf("Timebase frequency: %d Hz\r\n", clock_get_frequency(FrequencyBaseTimebase));
 }
 
+void cmd_ftl_mapping(int argc, char** argv) {
+	ftl_printdata();
+}
+
+void cmd_nand_status(int agc, char** argv) {
+	bufferPrintf("nand status: %x\r\n", nand_read_status());
+}
+
 void cmd_version(int argc, char** argv) {
 	bufferPrintf("%s\r\n", OPENIBOOT_VERSION_STR);
+}
+
+void cmd_time(int argc, char** argv) {
+	bufferPrintf("Current time: %02d:%02d:%02d, %s %02d/%02d/20%02d\r\n", pmu_get_hours(), pmu_get_minutes(), pmu_get_seconds(), pmu_get_dayofweek_str(), pmu_get_month(), pmu_get_day(), pmu_get_year());
 }
 
 void cmd_help(int argc, char** argv) {
@@ -554,9 +624,14 @@ OPIBCommand CommandList[] =
 		{"gpio_pinstate", "get the state of a GPIO pin", cmd_gpio_pinstate},
 		{"dma", "perform a DMA transfer", cmd_dma},
 		{"nand_read", "read a page of NAND into RAM", cmd_nand_read},
+		{"nand_write", "write a page of NAND", cmd_nand_write},
 		{"nand_read_spare", "read a page of NAND's spare into RAM", cmd_nand_read_spare},
+		{"nand_status", "read NAND status", cmd_nand_status},
+		{"nand_ecc", "hardware ECC a page", cmd_nand_ecc},
 		{"vfl_read", "read a page of VFL into RAM", cmd_vfl_read},
+		{"vfl_erase", "erase a block of VFL", cmd_vfl_erase},
 		{"ftl_read", "read a page of FTL into RAM", cmd_ftl_read},
+		{"ftl_mapping", "print FTL mapping information", cmd_ftl_mapping},
 		{"bdev_read", "read bytes from a NAND block device", cmd_bdev_read},
 		{"fs_ls", "list files and folders", fs_cmd_ls},
 		{"fs_cat", "display a file", fs_cmd_cat},
@@ -579,10 +654,12 @@ OPIBCommand CommandList[] =
 		{"backlight", "set the backlight level", cmd_backlight},
 		{"kernel", "load a Linux kernel", cmd_kernel},
 		{"ramdisk", "load a Linux ramdisk", cmd_ramdisk},
+		{"rootfs", "specify a file as the Linux rootfs", cmd_rootfs},
 		{"boot", "boot a Linux kernel", cmd_boot},
 		{"go", "jump to a specified address (interrupts disabled)", cmd_go},
 		{"jump", "jump to a specified address (interrupts enabled)", cmd_jump},
 		{"version", "display the version string", cmd_version},
+		{"time", "display the current time according to the RTC", cmd_time},
 		{"help", "list the available commands", cmd_help},
 		{NULL, NULL}
 	};
